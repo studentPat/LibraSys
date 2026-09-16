@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LibraSys</title><link rel="stylesheet" href="styles.css"></head>
+<body>
+<header><h1>LibraSys</h1><p>Secure single-branch library management</p></header>
+<main>
+<section class="card"><h2>Catalog</h2><form id="search"><input id="term" placeholder="Search title or ISBN"><button>Search</button></form><table><thead><tr><th>Title</th><th>ISBN</th><th>Publisher</th><th>Available</th></tr></thead><tbody id="results"></tbody></table></section>
+<section class="card"><h2>Member lookup</h2><form id="member"><input id="membership" placeholder="Membership number" required><button>Find</button></form><pre id="member-result"></pre></section>
+</main>
+<script>
+const api=window.LIBRASYS_API||'http://localhost:5000';
+async function loadCatalog(term=''){const r=await fetch(`${api}/api/catalog?search=${encodeURIComponent(term)}`);const books=await r.json();document.querySelector('#results').innerHTML=books.map(b=>`<tr><td>${escapeHtml(b.title)}</td><td>${escapeHtml(b.isbn)}</td><td>${escapeHtml(b.publisherName||'')}</td><td>${b.availableCopies||0}</td></tr>`).join('');}
+document.querySelector('#search').addEventListener('submit',e=>{e.preventDefault();loadCatalog(document.querySelector('#term').value);});
+document.querySelector('#member').addEventListener('submit',async e=>{e.preventDefault();const n=document.querySelector('#membership').value;const r=await fetch(`${api}/api/members/${encodeURIComponent(n)}`);document.querySelector('#member-result').textContent=r.ok?JSON.stringify(await r.json(),null,2):'Member not found';});
+function escapeHtml(v){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}loadCatalog();
+</script></body></html>
