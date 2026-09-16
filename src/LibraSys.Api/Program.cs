@@ -134,6 +134,13 @@ app.MapPost("/api/members", async (HttpContext http, CreateMemberRequest request
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
 
+app.MapPost("/api/members/{memberId:long}/account", async (HttpContext http, long memberId, CreateMemberAccountRequest request, LibraryService service, CancellationToken ct) =>
+{
+    if (!IsStaff(http.User)) return Results.Forbid();
+    try { return Results.Ok(await service.CreateMemberAccountAsync(memberId, request, UserId(http.User), ct)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+});
+
 app.MapGet("/api/members/{membershipNumber}", async (HttpContext http, string membershipNumber, LibraryService service, CancellationToken ct) =>
 {
     if (!http.User.Identity?.IsAuthenticated ?? true) return Results.Unauthorized();
@@ -216,6 +223,7 @@ public sealed record ReservationRequest(long BookId, long MemberId, string Idemp
 public sealed record CreateBookRequest(string Isbn, string Title, long? PublisherId, int? PublicationYear);
 public sealed record CreateCopyRequest(string Barcode, DateTime AcquiredAt);
 public sealed record CreateMemberRequest(string MembershipNumber, string FullName, string Email, string? Phone);
+public sealed record CreateMemberAccountRequest(string Username, string Password, string DisplayName, string Email);
 public sealed record FineRequest(long? BorrowingId, long MemberId, decimal Amount, string Reason, string IdempotencyKey);
 public sealed record PaymentRequest(long FineId, long MemberId, decimal Amount, string PaymentReference);
 public sealed record BookRow(long BookId, string Isbn, string Title, string? PublisherName, int? AvailableCopies);
@@ -430,6 +438,44 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
         {
             await tx.RollbackAsync(ct);
             throw new InvalidOperationException("Barcode is already registered.");
+        }
+    }
+
+    public async Task<object> CreateMemberAccountAsync(long memberId, CreateMemberAccountRequest request, long actorUserId, CancellationToken ct)
+    {
+        if (memberId <= 0 || string.IsNullOrWhiteSpace(request.Username) || request.Username.Length > 100 ||
+            string.IsNullOrWhiteSpace(request.Password) || request.Password.Length < 12 ||
+            string.IsNullOrWhiteSpace(request.DisplayName) || string.IsNullOrWhiteSpace(request.Email))
+            throw new InvalidOperationException("Member, username, display name, email, and a 12-character password are required.");
+
+        await using var connection = (MySqlConnection)db;
+        await connection.OpenAsync(ct);
+        await using var tx = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+        var member = await connection.QuerySingleOrDefaultAsync<(long MemberId, long? UserId, string Status)>(
+            new CommandDefinition("SELECT member_id MemberId, user_id UserId, status Status FROM members WHERE member_id=@memberId FOR UPDATE", new { memberId }, tx, cancellationToken: ct));
+        if (member.MemberId == 0 || member.Status == "closed") throw new InvalidOperationException("Member does not exist or is closed.");
+        if (member.UserId is not null) throw new InvalidOperationException("Member already has an account.");
+        try
+        {
+            var userId = await connection.ExecuteScalarAsync<long>(new CommandDefinition("""
+                INSERT INTO users(username, password_hash, display_name, email)
+                VALUES(@Username, @PasswordHash, @DisplayName, @Email);
+                SELECT LAST_INSERT_ID();
+                """, new { request.Username, PasswordHash = hasher.Hash(request.Password), request.DisplayName, request.Email }, tx, cancellationToken: ct));
+            var roleId = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+                "SELECT role_id FROM roles WHERE role_name='member'", transaction: tx, cancellationToken: ct));
+            await connection.ExecuteAsync(new CommandDefinition(
+                "INSERT INTO user_roles(user_id, role_id) VALUES(@userId, @roleId)", new { userId, roleId }, tx, cancellationToken: ct));
+            await connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE members SET user_id=@userId WHERE member_id=@memberId", new { userId, memberId }, tx, cancellationToken: ct));
+            await WriteAuditAsync(connection, tx, actorUserId, "members.account.create", "users", userId.ToString(), ct);
+            await tx.CommitAsync(ct);
+            return new { UserId = userId, MemberId = memberId, request.Username };
+        }
+        catch (MySqlException ex) when (ex.Number == 1062)
+        {
+            await tx.RollbackAsync(ct);
+            throw new InvalidOperationException("Username or email is already registered.");
         }
     }
 

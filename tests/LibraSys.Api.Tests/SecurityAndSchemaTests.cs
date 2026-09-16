@@ -84,6 +84,9 @@ public sealed class SecurityAndSchemaTests
         Assert.Contains("/api/catalog/books/{bookId:long}/copies", source);
         Assert.Contains("catalog.copy.create", source);
         Assert.Contains("Barcode is already registered.", source);
+        Assert.Contains("/api/members/{memberId:long}/account", source);
+        Assert.Contains("members.account.create", source);
+        Assert.Contains("request.Password.Length < 12", source);
         Assert.Contains("Payment reference has already been used for different payment data.", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("existing.Amount == request.Amount", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         var programText = File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs"));
