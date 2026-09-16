@@ -373,18 +373,23 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
             string.IsNullOrWhiteSpace(request.Title) || request.Title.Length > 300 ||
             request.PublicationYear is < 1000 or > 2100)
             throw new InvalidOperationException("ISBN, title, and publication year are invalid.");
+        await using var connection = (MySqlConnection)db;
+        await connection.OpenAsync(ct);
+        await using var tx = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         try
         {
-            var bookId = await db.ExecuteScalarAsync<long>(new CommandDefinition("""
+            var bookId = await connection.ExecuteScalarAsync<long>(new CommandDefinition("""
                 INSERT INTO books(isbn, title, publisher_id, publication_year)
                 VALUES(@Isbn, @Title, @PublisherId, @PublicationYear);
                 SELECT LAST_INSERT_ID();
-                """, request, cancellationToken: ct));
-            await WriteAuditAsync(actorUserId, "catalog.book.create", "books", bookId.ToString(), ct);
+                """, request, tx, cancellationToken: ct));
+            await WriteAuditAsync(connection, tx, actorUserId, "catalog.book.create", "books", bookId.ToString(), ct);
+            await tx.CommitAsync(ct);
             return new { BookId = bookId, request.Isbn, request.Title };
         }
         catch (MySqlException ex) when (ex.Number == 1062)
         {
+            await tx.RollbackAsync(ct);
             throw new InvalidOperationException("ISBN is already registered.");
         }
     }
@@ -395,18 +400,23 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
             string.IsNullOrWhiteSpace(request.FullName) || request.FullName.Length > 150 ||
             string.IsNullOrWhiteSpace(request.Email) || request.Email.Length > 254)
             throw new InvalidOperationException("Membership number, name, and email are required and bounded.");
+        await using var connection = (MySqlConnection)db;
+        await connection.OpenAsync(ct);
+        await using var tx = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         try
         {
-            var memberId = await db.ExecuteScalarAsync<long>(new CommandDefinition("""
+            var memberId = await connection.ExecuteScalarAsync<long>(new CommandDefinition("""
                 INSERT INTO members(membership_number, full_name, email, phone, status, joined_at)
                 VALUES(@MembershipNumber, @FullName, @Email, @Phone, 'active', UTC_DATE());
                 SELECT LAST_INSERT_ID();
-                """, request, cancellationToken: ct));
-            await WriteAuditAsync(actorUserId, "members.create", "members", memberId.ToString(), ct);
+                """, request, tx, cancellationToken: ct));
+            await WriteAuditAsync(connection, tx, actorUserId, "members.create", "members", memberId.ToString(), ct);
+            await tx.CommitAsync(ct);
             return new { MemberId = memberId, request.MembershipNumber, request.FullName };
         }
         catch (MySqlException ex) when (ex.Number == 1062)
         {
+            await tx.RollbackAsync(ct);
             throw new InvalidOperationException("Membership number or email is already registered.");
         }
     }
