@@ -14,6 +14,8 @@ public sealed class SecurityAndSchemaTests
         Assert.NotEqual(first, second);
         Assert.True(hasher.Verify("correct horse battery staple", first));
         Assert.False(hasher.Verify("wrong password", first));
+        Assert.False(hasher.Verify("password", "not-a-valid-hash"));
+        Assert.False(hasher.Verify("password", "pbkdf2-sha256$1$bad$bad"));
     }
 
     [Fact]

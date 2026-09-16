@@ -39,6 +39,8 @@ app.MapHealthChecks("/health");
 
 app.MapPost("/api/auth/login", async (LoginRequest request, LibraryService service, CancellationToken ct) =>
 {
+    if (string.IsNullOrWhiteSpace(request.Username) || string.IsNullOrWhiteSpace(request.Password))
+        return Results.BadRequest(new { error = "Username and password are required." });
     var result = await service.LoginAsync(request, ct);
     return result is null ? Results.Unauthorized() : Results.Ok(result);
 });
@@ -152,12 +154,20 @@ public sealed class PasswordHasher
 
     public bool Verify(string password, string encoded)
     {
-        var parts = encoded.Split('$');
-        if (parts.Length != 4 || !int.TryParse(parts[1], out var iterations)) return false;
-        var salt = Convert.FromBase64String(parts[2]);
-        var expected = Convert.FromBase64String(parts[3]);
-        var actual = Rfc2898DeriveBytes.Pbkdf2(password, salt, iterations, HashAlgorithmName.SHA256, expected.Length);
-        return CryptographicOperations.FixedTimeEquals(actual, expected);
+        try
+        {
+            var parts = encoded.Split('$');
+            if (parts.Length != 4 || parts[0] != "pbkdf2-sha256" ||
+                !int.TryParse(parts[1], out var iterations) || iterations < 100_000)
+                return false;
+            var salt = Convert.FromBase64String(parts[2]);
+            var expected = Convert.FromBase64String(parts[3]);
+            if (salt.Length < 16 || expected.Length < 32) return false;
+            var actual = Rfc2898DeriveBytes.Pbkdf2(password, salt, iterations, HashAlgorithmName.SHA256, expected.Length);
+            return CryptographicOperations.FixedTimeEquals(actual, expected);
+        }
+        catch (FormatException) { return false; }
+        catch (ArgumentException) { return false; }
     }
 }
 
