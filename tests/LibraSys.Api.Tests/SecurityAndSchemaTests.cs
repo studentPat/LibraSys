@@ -47,6 +47,9 @@ public sealed class SecurityAndSchemaTests
         var connectionSettings = File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "appsettings.json"));
         Assert.DoesNotContain("${LIBRASYS_DB_PASSWORD}", connectionSettings);
         Assert.Contains("connectionString.Contains(\"${\"", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        var program = File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs"));
+        Assert.Contains("if (app.Environment.IsDevelopment())", program);
+        Assert.Contains("app.UseSwaggerUI();", program);
         var frontend = File.ReadAllText(Path.Combine(root, "frontend", "index.html"));
         Assert.Contains("/api/me/fines", frontend);
         Assert.Contains("/api/reports/overdue", frontend);

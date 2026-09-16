@@ -4,6 +4,8 @@ Use separate `librasys_runtime`, `librasys_reporting`, `librasys_migrator`, and 
 
 Provide the complete `ConnectionStrings__LibraryDatabase` value through deployment configuration. Do not rely on `${...}` interpolation inside JSON configuration; .NET treats such text literally. Readiness remains unhealthy until a complete, non-placeholder connection string is configured.
 
+Interactive Swagger documentation is enabled only in the Development environment. Keep production API documentation behind an authenticated internal route or an external access control layer if it is required for operations.
+
 Enable structured application audit events and immutable `audit_logs` records for authentication, catalog/member changes, circulation, fines, and payments. Encrypt backups and sensitive exports with managed keys; document key ownership, rotation, and break-glass access. Do not store raw passwords or payment card data.
 
 Run full backups daily, binlog shipping continuously, and verify restore to an isolated MySQL instance at least quarterly. Target RPO 15 minutes and RTO 4 hours unless the deployment owner approves otherwise. Retain backups according to policy and test logical and physical restore procedures.
