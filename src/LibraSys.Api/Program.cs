@@ -6,6 +6,15 @@ using MySqlConnector;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddProblemDetails();
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? Array.Empty<string>();
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("frontend", policy =>
+    {
+        if (allowedOrigins.Length > 0)
+            policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod();
+    });
+});
 builder.Services.AddSingleton<PasswordHasher>();
 builder.Services.AddScoped<IDbConnection>(_ =>
     new MySqlConnection(builder.Configuration.GetConnectionString("LibraryDatabase")));
@@ -21,6 +30,7 @@ var app = builder.Build();
 app.UseExceptionHandler();
 app.UseSwagger();
 app.UseSwaggerUI();
+app.UseCors("frontend");
 app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();

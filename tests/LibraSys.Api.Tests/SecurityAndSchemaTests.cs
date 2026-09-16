@@ -48,6 +48,10 @@ public sealed class SecurityAndSchemaTests
         Assert.Contains("/api/me/fines", frontend);
         Assert.Contains("/api/reports/overdue", frontend);
         Assert.Contains("escapeHtml", frontend);
+        var appSettings = File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "appsettings.json"));
+        Assert.Contains("\"AllowedOrigins\": []", appSettings);
+        Assert.Contains("AddCors", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("UseCors(\"frontend\")", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("WHERE idempotency_key=@IdempotencyKey", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
     }
 
