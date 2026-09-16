@@ -46,10 +46,13 @@ app.MapPost("/api/auth/login", async (LoginRequest request, LibraryService servi
 app.MapGet("/api/catalog", async (string? search, int? page, int? pageSize, LibraryService service, CancellationToken ct) =>
     Results.Ok(await service.SearchBooksAsync(search, page ?? 1, Math.Clamp(pageSize ?? 20, 1, 100), ct)));
 
-app.MapGet("/api/members/{membershipNumber}", async (string membershipNumber, LibraryService service, CancellationToken ct) =>
+app.MapGet("/api/members/{membershipNumber}", async (HttpContext http, string membershipNumber, LibraryService service, CancellationToken ct) =>
 {
+    if (!http.User.Identity?.IsAuthenticated ?? true) return Results.Unauthorized();
     var member = await service.GetMemberAsync(membershipNumber, ct);
-    return member is null ? Results.NotFound() : Results.Ok(member);
+    if (member is null) return Results.NotFound();
+    if (!IsStaff(http.User) && member.UserId != UserId(http.User)) return Results.Forbid();
+    return Results.Ok(member);
 });
 
 app.MapPost("/api/circulation/borrow", async (HttpContext http, BorrowRequest request, LibraryService service, CancellationToken ct) =>
@@ -69,6 +72,8 @@ app.MapPost("/api/circulation/return", async (HttpContext http, ReturnRequest re
 app.MapPost("/api/reservations", async (HttpContext http, ReservationRequest request, LibraryService service, CancellationToken ct) =>
 {
     if (!http.User.Identity?.IsAuthenticated ?? true) return Results.Unauthorized();
+    if (!IsStaff(http.User) && !await service.MemberBelongsToUserAsync(request.MemberId, UserId(http.User), ct))
+        return Results.Forbid();
     try { return Results.Ok(await service.ReserveAsync(request, ct)); }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
@@ -88,8 +93,16 @@ app.MapPost("/api/fines", async (HttpContext http, FineRequest request, LibraryS
 
 app.MapGet("/api/members/{memberId:long}/fines", async (HttpContext http, long memberId, LibraryService service, CancellationToken ct) =>
 {
-    if (!http.User.IsInRole("librarian") && !http.User.IsInRole("admin")) return Results.Forbid();
+    if (!http.User.Identity?.IsAuthenticated ?? true) return Results.Unauthorized();
+    if (!IsStaff(http.User) && !await service.MemberBelongsToUserAsync(memberId, UserId(http.User), ct))
+        return Results.Forbid();
     return Results.Ok(await service.MemberFinesAsync(memberId, ct));
+});
+
+app.MapGet("/api/me/fines", async (HttpContext http, LibraryService service, CancellationToken ct) =>
+{
+    if (!http.User.Identity?.IsAuthenticated ?? true) return Results.Unauthorized();
+    return Results.Ok(await service.MemberFinesForUserAsync(UserId(http.User), ct));
 });
 
 app.MapPost("/api/payments", async (HttpContext http, PaymentRequest request, LibraryService service, CancellationToken ct) =>
@@ -101,6 +114,12 @@ app.MapPost("/api/payments", async (HttpContext http, PaymentRequest request, Li
 
 app.Run();
 
+static bool IsStaff(System.Security.Claims.ClaimsPrincipal user) =>
+    user.IsInRole("librarian") || user.IsInRole("admin");
+
+static long UserId(System.Security.Claims.ClaimsPrincipal user) =>
+    long.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var id) ? id : 0;
+
 public sealed record LoginRequest(string Username, string Password);
 public sealed record LoginResponse(long UserId, string DisplayName, string[] Roles, string Token);
 public sealed record BorrowRequest(long CopyId, long MemberId, long StaffUserId, DateTime DueAt, string IdempotencyKey);
@@ -109,7 +128,7 @@ public sealed record ReservationRequest(long BookId, long MemberId, string Idemp
 public sealed record FineRequest(long? BorrowingId, long MemberId, decimal Amount, string Reason, string IdempotencyKey);
 public sealed record PaymentRequest(long FineId, long MemberId, decimal Amount, string PaymentReference, long ReceivedBy);
 public sealed record BookRow(long BookId, string Isbn, string Title, string? PublisherName, int? AvailableCopies);
-public sealed record MemberRow(long MemberId, string MembershipNumber, string FullName, string Email, string Status);
+public sealed record MemberRow(long MemberId, long? UserId, string MembershipNumber, string FullName, string Email, string Status);
 
 public sealed class PasswordHasher
 {
@@ -183,7 +202,12 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
 
     public Task<MemberRow?> GetMemberAsync(string number, CancellationToken ct) =>
         db.QuerySingleOrDefaultAsync<MemberRow>(new CommandDefinition(
-            "SELECT member_id MemberId, membership_number MembershipNumber, full_name FullName, email Email, status Status FROM members WHERE membership_number=@number", new { number }, cancellationToken: ct));
+            "SELECT member_id MemberId, user_id UserId, membership_number MembershipNumber, full_name FullName, email Email, status Status FROM members WHERE membership_number=@number", new { number }, cancellationToken: ct));
+
+    public Task<bool> MemberBelongsToUserAsync(long memberId, long userId, CancellationToken ct) =>
+        db.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT EXISTS(SELECT 1 FROM members WHERE member_id=@memberId AND user_id=@userId AND status <> 'closed')",
+            new { memberId, userId }, cancellationToken: ct));
 
     public async Task<object> BorrowAsync(BorrowRequest request, CancellationToken ct)
     {
@@ -271,6 +295,14 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
                    COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.fine_id=f.fine_id), 0) PaidAmount
             FROM fines f WHERE member_id=@memberId ORDER BY assessed_at DESC
             """, new { memberId }, cancellationToken: ct));
+
+    public async Task<IEnumerable<object>> MemberFinesForUserAsync(long userId, CancellationToken ct)
+    {
+        var memberId = await db.ExecuteScalarAsync<long?>(new CommandDefinition(
+            "SELECT member_id FROM members WHERE user_id=@userId AND status <> 'closed'",
+            new { userId }, cancellationToken: ct));
+        return memberId is null ? Array.Empty<object>() : await MemberFinesAsync(memberId.Value, ct);
+    }
 
     public async Task<object> PayFineAsync(PaymentRequest request, CancellationToken ct)
     {

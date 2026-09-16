@@ -28,6 +28,8 @@ public sealed class SecurityAndSchemaTests
         Assert.Contains("CREATE TABLE payments", schema);
         Assert.Contains("FOR UPDATE", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("Pbkdf2", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("MemberBelongsToUserAsync", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("/api/me/fines", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
     }
 
     private static string FindRepositoryRoot()
