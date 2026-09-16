@@ -402,6 +402,10 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
             "SELECT member_id FROM members WHERE member_id=@MemberId AND status='active' FOR UPDATE",
             request, tx, cancellationToken: ct));
         if (memberActive is null) throw new InvalidOperationException("Member is not active.");
+        var bookExists = await connection.ExecuteScalarAsync<long?>(new CommandDefinition(
+            "SELECT book_id FROM books WHERE book_id=@BookId FOR UPDATE",
+            request, tx, cancellationToken: ct));
+        if (bookExists is null) throw new InvalidOperationException("Book does not exist.");
         try
         {
             await connection.ExecuteAsync(new CommandDefinition(
