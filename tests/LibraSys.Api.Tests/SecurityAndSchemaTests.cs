@@ -44,6 +44,10 @@ public sealed class SecurityAndSchemaTests
         Assert.Contains("health/ready", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("LibraryDatabaseHealthCheck", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("CancelAfter(TimeSpan.FromSeconds(3))", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        var frontend = File.ReadAllText(Path.Combine(root, "frontend", "index.html"));
+        Assert.Contains("/api/me/fines", frontend);
+        Assert.Contains("/api/reports/overdue", frontend);
+        Assert.Contains("escapeHtml", frontend);
         Assert.Contains("WHERE idempotency_key=@IdempotencyKey", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
     }
 
