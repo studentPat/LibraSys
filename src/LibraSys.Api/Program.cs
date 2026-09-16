@@ -58,7 +58,7 @@ app.MapGet("/api/members/{membershipNumber}", async (HttpContext http, string me
 app.MapPost("/api/circulation/borrow", async (HttpContext http, BorrowRequest request, LibraryService service, CancellationToken ct) =>
 {
     if (!http.User.IsInRole("librarian") && !http.User.IsInRole("admin")) return Results.Forbid();
-    try { return Results.Ok(await service.BorrowAsync(request, ct)); }
+    try { return Results.Ok(await service.BorrowAsync(request, UserId(http.User), ct)); }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
 
@@ -108,7 +108,7 @@ app.MapGet("/api/me/fines", async (HttpContext http, LibraryService service, Can
 app.MapPost("/api/payments", async (HttpContext http, PaymentRequest request, LibraryService service, CancellationToken ct) =>
 {
     if (!http.User.IsInRole("librarian") && !http.User.IsInRole("admin")) return Results.Forbid();
-    try { return Results.Ok(await service.PayFineAsync(request, ct)); }
+    try { return Results.Ok(await service.PayFineAsync(request, UserId(http.User), ct)); }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
 
@@ -122,11 +122,11 @@ static long UserId(System.Security.Claims.ClaimsPrincipal user) =>
 
 public sealed record LoginRequest(string Username, string Password);
 public sealed record LoginResponse(long UserId, string DisplayName, string[] Roles, string Token);
-public sealed record BorrowRequest(long CopyId, long MemberId, long StaffUserId, DateTime DueAt, string IdempotencyKey);
-public sealed record ReturnRequest(long BorrowingId, long StaffUserId, string Condition);
+public sealed record BorrowRequest(long CopyId, long MemberId, DateTime DueAt, string IdempotencyKey);
+public sealed record ReturnRequest(long BorrowingId, string Condition);
 public sealed record ReservationRequest(long BookId, long MemberId, string IdempotencyKey);
 public sealed record FineRequest(long? BorrowingId, long MemberId, decimal Amount, string Reason, string IdempotencyKey);
-public sealed record PaymentRequest(long FineId, long MemberId, decimal Amount, string PaymentReference, long ReceivedBy);
+public sealed record PaymentRequest(long FineId, long MemberId, decimal Amount, string PaymentReference);
 public sealed record BookRow(long BookId, string Isbn, string Title, string? PublisherName, int? AvailableCopies);
 public sealed record MemberRow(long MemberId, long? UserId, string MembershipNumber, string FullName, string Email, string Status);
 
@@ -209,7 +209,7 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
             "SELECT EXISTS(SELECT 1 FROM members WHERE member_id=@memberId AND user_id=@userId AND status <> 'closed')",
             new { memberId, userId }, cancellationToken: ct));
 
-    public async Task<object> BorrowAsync(BorrowRequest request, CancellationToken ct)
+    public async Task<object> BorrowAsync(BorrowRequest request, long staffUserId, CancellationToken ct)
     {
         for (var attempt = 0; attempt < 3; attempt++)
         {
@@ -221,9 +221,13 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
                 var copy = await connection.QuerySingleOrDefaultAsync<(long CopyId, string Status)>(
                     new CommandDefinition("SELECT copy_id CopyId, status Status FROM book_copies WHERE copy_id=@CopyId FOR UPDATE", request, tx, cancellationToken: ct));
                 if (copy.CopyId == 0 || copy.Status != "available") throw new InvalidOperationException("Copy is not available.");
+                var memberActive = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+                    "SELECT EXISTS(SELECT 1 FROM members WHERE member_id=@MemberId AND status='active')",
+                    request, tx, cancellationToken: ct));
+                if (!memberActive) throw new InvalidOperationException("Member is not active.");
                 await connection.ExecuteAsync(new CommandDefinition(
                     "INSERT INTO borrowings(copy_id,member_id,borrowed_at,due_at,status,idempotency_key,created_by) VALUES(@CopyId,@MemberId,UTC_TIMESTAMP(),@DueAt,'active',@IdempotencyKey,@StaffUserId)",
-                    request, tx, cancellationToken: ct));
+                    new { request.CopyId, request.MemberId, request.DueAt, request.IdempotencyKey, StaffUserId = staffUserId }, tx, cancellationToken: ct));
                 await connection.ExecuteAsync(new CommandDefinition("UPDATE book_copies SET status='on_loan', version=version+1 WHERE copy_id=@CopyId", request, tx, cancellationToken: ct));
                 await tx.CommitAsync(ct);
                 return new { request.CopyId, status = "active" };
@@ -249,9 +253,17 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
 
     public async Task<object> ReserveAsync(ReservationRequest request, CancellationToken ct)
     {
-        await db.ExecuteAsync(new CommandDefinition(
+        await using var connection = (MySqlConnection)db;
+        await connection.OpenAsync(ct);
+        await using var tx = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+        var memberActive = await connection.ExecuteScalarAsync<long?>(new CommandDefinition(
+            "SELECT member_id FROM members WHERE member_id=@MemberId AND status='active' FOR UPDATE",
+            request, tx, cancellationToken: ct));
+        if (memberActive is null) throw new InvalidOperationException("Member is not active.");
+        await connection.ExecuteAsync(new CommandDefinition(
             "INSERT INTO reservations(book_id,member_id,status,idempotency_key) VALUES(@BookId,@MemberId,'queued',@IdempotencyKey)",
-            request, cancellationToken: ct));
+            request, tx, cancellationToken: ct));
+        await tx.CommitAsync(ct);
         return new { request.BookId, status = "queued" };
     }
 
@@ -304,7 +316,7 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
         return memberId is null ? Array.Empty<object>() : await MemberFinesAsync(memberId.Value, ct);
     }
 
-    public async Task<object> PayFineAsync(PaymentRequest request, CancellationToken ct)
+    public async Task<object> PayFineAsync(PaymentRequest request, long receivedBy, CancellationToken ct)
     {
         if (request.Amount <= 0 || string.IsNullOrWhiteSpace(request.PaymentReference))
             throw new InvalidOperationException("A positive amount and payment reference are required.");
@@ -330,7 +342,7 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
             await connection.ExecuteAsync(new CommandDefinition("""
                 INSERT INTO payments(fine_id, member_id, amount, payment_reference, received_by)
                 VALUES(@FineId, @MemberId, @Amount, @PaymentReference, @ReceivedBy)
-                """, request, tx, cancellationToken: ct));
+                """, new { request.FineId, request.MemberId, request.Amount, request.PaymentReference, ReceivedBy = receivedBy }, tx, cancellationToken: ct));
             var newStatus = request.Amount == fine.Amount - paid ? "paid" : "partially_paid";
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE fines SET status=@newStatus WHERE fine_id=@FineId", new { request.FineId, newStatus }, tx, cancellationToken: ct));

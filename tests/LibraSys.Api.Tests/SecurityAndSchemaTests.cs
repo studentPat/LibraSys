@@ -30,6 +30,9 @@ public sealed class SecurityAndSchemaTests
         Assert.Contains("Pbkdf2", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("MemberBelongsToUserAsync", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("/api/me/fines", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("Member is not active.", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("public sealed record BorrowRequest(long CopyId, long MemberId, DateTime DueAt, string IdempotencyKey)", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("public sealed record PaymentRequest(long FineId, long MemberId, decimal Amount, string PaymentReference)", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
     }
 
     private static string FindRepositoryRoot()
