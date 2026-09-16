@@ -2,10 +2,31 @@ using System.Data;
 using System.Security.Cryptography;
 using Dapper;
 using Microsoft.AspNetCore.Authentication.BearerToken;
+using Microsoft.AspNetCore.RateLimiting;
 using MySqlConnector;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddProblemDetails();
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = static (context, cancellationToken) =>
+    {
+        context.HttpContext.Response.Headers.RetryAfter = "60";
+        return ValueTask.CompletedTask;
+    };
+    options.AddPolicy("login", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+});
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? Array.Empty<string>();
 builder.Services.AddCors(options =>
 {
@@ -31,6 +52,7 @@ app.UseExceptionHandler();
 app.UseSwagger();
 app.UseSwaggerUI();
 app.UseCors("frontend");
+app.UseRateLimiter();
 app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
@@ -57,7 +79,7 @@ app.MapPost("/api/auth/login", async (LoginRequest request, LibraryService servi
         return Results.BadRequest(new { error = "Username and password are required." });
     var result = await service.LoginAsync(request, ct);
     return result is null ? Results.Unauthorized() : Results.Ok(result);
-});
+}).RequireRateLimiting("login");
 
 app.MapPost("/api/auth/logout", async (HttpContext http, LibraryService service, CancellationToken ct) =>
 {
