@@ -43,6 +43,17 @@ app.MapPost("/api/auth/login", async (LoginRequest request, LibraryService servi
     return result is null ? Results.Unauthorized() : Results.Ok(result);
 });
 
+app.MapPost("/api/auth/logout", async (HttpContext http, LibraryService service, CancellationToken ct) =>
+{
+    if (!http.User.Identity?.IsAuthenticated ?? true) return Results.Unauthorized();
+    var authorization = http.Request.Headers.Authorization.ToString();
+    var token = authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+        ? authorization["Bearer ".Length..]
+        : string.Empty;
+    await service.RevokeSessionAsync(token, UserId(http.User), ct);
+    return Results.NoContent();
+});
+
 app.MapGet("/api/catalog", async (string? search, int? page, int? pageSize, LibraryService service, CancellationToken ct) =>
     Results.Ok(await service.SearchBooksAsync(search, page ?? 1, Math.Clamp(pageSize ?? 20, 1, 100), ct)));
 
@@ -65,7 +76,7 @@ app.MapPost("/api/circulation/borrow", async (HttpContext http, BorrowRequest re
 app.MapPost("/api/circulation/return", async (HttpContext http, ReturnRequest request, LibraryService service, CancellationToken ct) =>
 {
     if (!http.User.IsInRole("librarian") && !http.User.IsInRole("admin")) return Results.Forbid();
-    try { return Results.Ok(await service.ReturnAsync(request, ct)); }
+    try { return Results.Ok(await service.ReturnAsync(request, UserId(http.User), ct)); }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
 
@@ -164,8 +175,27 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
         await db.ExecuteAsync(new CommandDefinition(
             "INSERT INTO sessions(session_id,user_id,token_hash,expires_at) VALUES(UUID(),@UserId,@TokenHash,DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR))",
             new { user.UserId, TokenHash = tokenHash }, cancellationToken: ct));
+        await WriteAuditAsync(user.UserId, "auth.login", "users", user.UserId.ToString(), ct);
         return new LoginResponse(user.UserId, user.DisplayName, roles, token);
     }
+
+    public async Task RevokeSessionAsync(string token, long userId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(token)) return;
+        byte[] hash;
+        try { hash = SHA256.HashData(Convert.FromHexString(token)); }
+        catch (FormatException) { return; }
+        await db.ExecuteAsync(new CommandDefinition(
+            "UPDATE sessions SET revoked_at=UTC_TIMESTAMP() WHERE token_hash=@Hash AND user_id=@UserId AND revoked_at IS NULL",
+            new { Hash = hash, userId }, cancellationToken: ct));
+        await WriteAuditAsync(userId, "auth.logout", "sessions", null, ct);
+    }
+
+    private Task WriteAuditAsync(long actorUserId, string action, string entity, string? entityId, CancellationToken ct) =>
+        db.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO audit_logs(actor_user_id, action_name, entity_name, entity_id)
+            VALUES(@actorUserId, @action, @entity, @entityId)
+            """, new { actorUserId, action, entity, entityId }, cancellationToken: ct));
 
     public async Task<System.Security.Claims.ClaimsPrincipal?> AuthenticateTokenAsync(string token, CancellationToken ct)
     {
@@ -232,6 +262,7 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
                     new { request.CopyId, request.MemberId, request.DueAt, request.IdempotencyKey, StaffUserId = staffUserId }, tx, cancellationToken: ct));
                 await connection.ExecuteAsync(new CommandDefinition("UPDATE book_copies SET status='on_loan', version=version+1 WHERE copy_id=@CopyId", request, tx, cancellationToken: ct));
                 await tx.CommitAsync(ct);
+                await WriteAuditAsync(staffUserId, "circulation.borrow", "borrowings", request.IdempotencyKey, ct);
                 return new { request.CopyId, status = "active" };
             }
             catch (MySqlException ex) when (ex.Number == 1213 && attempt < 2) { await tx.RollbackAsync(ct); await Task.Delay(25 * (attempt + 1), ct); }
@@ -247,7 +278,7 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
         throw new InvalidOperationException("Borrow operation could not be completed after deadlock retries.");
     }
 
-    public async Task<object> ReturnAsync(ReturnRequest request, CancellationToken ct)
+    public async Task<object> ReturnAsync(ReturnRequest request, long staffUserId, CancellationToken ct)
     {
         if (request.BorrowingId <= 0 || request.Condition is not ("good" or "damaged" or "lost"))
             throw new InvalidOperationException("A valid borrowing and return condition are required.");
@@ -261,6 +292,7 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
         var copyStatus = request.Condition == "lost" ? "lost" : request.Condition == "damaged" ? "maintenance" : "available";
         await connection.ExecuteAsync(new CommandDefinition("UPDATE book_copies SET status=@copyStatus, version=version+1 WHERE copy_id=@CopyId", new { borrowing.CopyId, copyStatus }, tx, cancellationToken: ct));
         await tx.CommitAsync(ct);
+        await WriteAuditAsync(staffUserId, "circulation.return", "borrowings", request.BorrowingId.ToString(), ct);
         return new { request.BorrowingId, status = "returned" };
     }
 
@@ -372,6 +404,7 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE fines SET status=@newStatus WHERE fine_id=@FineId", new { request.FineId, newStatus }, tx, cancellationToken: ct));
             await tx.CommitAsync(ct);
+            await WriteAuditAsync(receivedBy, "fines.payment", "payments", request.PaymentReference, ct);
             return new { request.FineId, request.Amount, status = newStatus };
         }
         catch (MySqlException ex) when (ex.Number == 1062)
