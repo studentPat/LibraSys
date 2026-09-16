@@ -12,6 +12,6 @@ Enable structured application audit events and immutable `audit_logs` records fo
 
 Run full backups daily, binlog shipping continuously, and verify restore to an isolated MySQL instance at least quarterly. Target RPO 15 minutes and RTO 4 hours unless the deployment owner approves otherwise. Retain backups according to policy and test logical and physical restore procedures.
 
-For tuning, run `EXPLAIN ANALYZE` on catalog search, member history, overdue report, and reservation queue queries. Preserve composite indexes, use bounded page sizes, and prefer keyset pagination for large deployments.
+For tuning, run the parameterized checks in `database/operations/query-tuning.sql` against a staging replica with representative data. Preserve composite indexes, use bounded page sizes, and prefer keyset pagination for large deployments.
 
 For split frontend/API deployments, set `Cors:AllowedOrigins` to the exact HTTPS frontend origins. Keep production origins in deployment configuration, never use `*` for authenticated traffic, and do not enable credential sharing unless the deployment explicitly requires it.

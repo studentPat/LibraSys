@@ -89,6 +89,10 @@ public sealed class SecurityAndSchemaTests
         Assert.Contains("request.Password.Length < 12", source);
         Assert.Contains("WriteAuditAsync(connection, tx, actorUserId, \"catalog.book.create\"", source);
         Assert.Contains("WriteAuditAsync(connection, tx, actorUserId, \"members.create\"", source);
+        var tuning = File.ReadAllText(Path.Combine(root, "database", "operations", "query-tuning.sql"));
+        Assert.Contains("EXPLAIN ANALYZE", tuning);
+        Assert.Contains("ix_borrowings_due_status", tuning);
+        Assert.Contains("ix_reservations_book_queue", tuning);
         Assert.Contains("Payment reference has already been used for different payment data.", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("existing.Amount == request.Amount", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         var programText = File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs"));
