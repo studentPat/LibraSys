@@ -57,6 +57,9 @@ public sealed class SecurityAndSchemaTests
         Assert.Contains("api/auth/logout", frontend);
         Assert.Contains("sessionStorage.removeItem('librasys_token')", frontend);
         Assert.Contains("'Bearer '+token", frontend);
+        Assert.Contains("/api/reservations", frontend);
+        Assert.Contains("/api/circulation/borrow", frontend);
+        Assert.Contains("/api/circulation/return", frontend);
         var appSettings = File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "appsettings.json"));
         Assert.Contains("\"AllowedOrigins\": []", appSettings);
         Assert.Contains("AddCors", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
