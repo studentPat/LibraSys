@@ -67,6 +67,9 @@ public sealed class SecurityAndSchemaTests
         Assert.Contains("RetryAfter", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("Page must be at least 1.", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("Search text is too long.", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("Fine recipient must be an active member.", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("Borrowing does not belong to the fine recipient.", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("SELECT member_id FROM borrowings WHERE borrowing_id=@BorrowingId FOR UPDATE", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("WHERE idempotency_key=@IdempotencyKey", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
     }
 

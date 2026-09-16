@@ -423,17 +423,36 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
         if (request.Amount <= 0 || string.IsNullOrWhiteSpace(request.Reason) || string.IsNullOrWhiteSpace(request.IdempotencyKey))
             throw new InvalidOperationException("A positive amount, reason, and idempotency key are required.");
 
+        await using var connection = (MySqlConnection)db;
+        await connection.OpenAsync(ct);
+        await using var tx = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         try
         {
-            var fineId = await db.ExecuteScalarAsync<long>(new CommandDefinition("""
+            var member = await connection.QuerySingleOrDefaultAsync<(long MemberId, string Status)>(
+                new CommandDefinition("SELECT member_id MemberId, status Status FROM members WHERE member_id=@MemberId FOR UPDATE", request, tx, cancellationToken: ct));
+            if (member.MemberId == 0 || member.Status != "active")
+                throw new InvalidOperationException("Fine recipient must be an active member.");
+
+            if (request.BorrowingId is not null)
+            {
+                var borrowingMemberId = await connection.ExecuteScalarAsync<long?>(new CommandDefinition(
+                    "SELECT member_id FROM borrowings WHERE borrowing_id=@BorrowingId FOR UPDATE",
+                    request, tx, cancellationToken: ct));
+                if (borrowingMemberId is null || borrowingMemberId.Value != request.MemberId)
+                    throw new InvalidOperationException("Borrowing does not belong to the fine recipient.");
+            }
+
+            var fineId = await connection.ExecuteScalarAsync<long>(new CommandDefinition("""
                 INSERT INTO fines(borrowing_id, member_id, amount, reason, status, idempotency_key)
                 VALUES(@BorrowingId, @MemberId, @Amount, @Reason, 'unpaid', @IdempotencyKey);
                 SELECT LAST_INSERT_ID();
-                """, request, cancellationToken: ct));
+                """, request, tx, cancellationToken: ct));
+            await tx.CommitAsync(ct);
             return new { FineId = fineId, request.MemberId, request.Amount, status = "unpaid" };
         }
         catch (MySqlException ex) when (ex.Number == 1062)
         {
+            await tx.RollbackAsync(ct);
             var existing = await db.QuerySingleAsync<object>(new CommandDefinition(
                 "SELECT fine_id FineId, member_id MemberId, amount Amount, status Status FROM fines WHERE idempotency_key=@IdempotencyKey",
                 request, cancellationToken: ct));
