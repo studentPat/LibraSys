@@ -141,7 +141,7 @@ app.MapPost("/api/reservations", async (HttpContext http, ReservationRequest req
     if (!http.User.Identity?.IsAuthenticated ?? true) return Results.Unauthorized();
     if (!IsStaff(http.User) && !await service.MemberBelongsToUserAsync(request.MemberId, UserId(http.User), ct))
         return Results.Forbid();
-    try { return Results.Ok(await service.ReserveAsync(request, ct)); }
+    try { return Results.Ok(await service.ReserveAsync(request, UserId(http.User), ct)); }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
 
@@ -154,7 +154,7 @@ app.MapGet("/api/reports/overdue", async (HttpContext http, LibraryService servi
 app.MapPost("/api/fines", async (HttpContext http, FineRequest request, LibraryService service, CancellationToken ct) =>
 {
     if (!http.User.IsInRole("librarian") && !http.User.IsInRole("admin")) return Results.Forbid();
-    try { return Results.Ok(await service.CreateFineAsync(request, ct)); }
+    try { return Results.Ok(await service.CreateFineAsync(request, UserId(http.User), ct)); }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
 
@@ -292,6 +292,12 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
             VALUES(@actorUserId, @action, @entity, @entityId)
             """, new { actorUserId, action, entity, entityId }, cancellationToken: ct));
 
+    private static Task WriteAuditAsync(MySqlConnection connection, MySqlTransaction transaction, long actorUserId, string action, string entity, string? entityId, CancellationToken ct) =>
+        connection.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO audit_logs(actor_user_id, action_name, entity_name, entity_id)
+            VALUES(@actorUserId, @action, @entity, @entityId)
+            """, new { actorUserId, action, entity, entityId }, transaction, cancellationToken: ct));
+
     public async Task<System.Security.Claims.ClaimsPrincipal?> AuthenticateTokenAsync(string token, CancellationToken ct)
     {
         byte[] hash;
@@ -356,8 +362,8 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
                     "INSERT INTO borrowings(copy_id,member_id,borrowed_at,due_at,status,idempotency_key,created_by) VALUES(@CopyId,@MemberId,UTC_TIMESTAMP(),@DueAt,'active',@IdempotencyKey,@StaffUserId)",
                     new { request.CopyId, request.MemberId, request.DueAt, request.IdempotencyKey, StaffUserId = staffUserId }, tx, cancellationToken: ct));
                 await connection.ExecuteAsync(new CommandDefinition("UPDATE book_copies SET status='on_loan', version=version+1 WHERE copy_id=@CopyId", request, tx, cancellationToken: ct));
+                await WriteAuditAsync(connection, tx, staffUserId, "circulation.borrow", "borrowings", request.IdempotencyKey, ct);
                 await tx.CommitAsync(ct);
-                await WriteAuditAsync(staffUserId, "circulation.borrow", "borrowings", request.IdempotencyKey, ct);
                 return new { request.CopyId, status = "active" };
             }
             catch (MySqlException ex) when (ex.Number == 1213 && attempt < 2) { await tx.RollbackAsync(ct); await Task.Delay(25 * (attempt + 1), ct); }
@@ -386,12 +392,12 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
         await connection.ExecuteAsync(new CommandDefinition("UPDATE borrowings SET returned_at=UTC_TIMESTAMP(), status='returned', returned_condition=@Condition WHERE borrowing_id=@BorrowingId", request, tx, cancellationToken: ct));
         var copyStatus = request.Condition == "lost" ? "lost" : request.Condition == "damaged" ? "maintenance" : "available";
         await connection.ExecuteAsync(new CommandDefinition("UPDATE book_copies SET status=@copyStatus, version=version+1 WHERE copy_id=@CopyId", new { borrowing.CopyId, copyStatus }, tx, cancellationToken: ct));
+        await WriteAuditAsync(connection, tx, staffUserId, "circulation.return", "borrowings", request.BorrowingId.ToString(), ct);
         await tx.CommitAsync(ct);
-        await WriteAuditAsync(staffUserId, "circulation.return", "borrowings", request.BorrowingId.ToString(), ct);
         return new { request.BorrowingId, status = "returned" };
     }
 
-    public async Task<object> ReserveAsync(ReservationRequest request, CancellationToken ct)
+    public async Task<object> ReserveAsync(ReservationRequest request, long actorUserId, CancellationToken ct)
     {
         if (request.BookId <= 0 || request.MemberId <= 0 || string.IsNullOrWhiteSpace(request.IdempotencyKey))
             throw new InvalidOperationException("Book, member, and idempotency key are required.");
@@ -411,6 +417,7 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
             await connection.ExecuteAsync(new CommandDefinition(
                 "INSERT INTO reservations(book_id,member_id,status,idempotency_key) VALUES(@BookId,@MemberId,'queued',@IdempotencyKey)",
                 request, tx, cancellationToken: ct));
+            await WriteAuditAsync(connection, tx, actorUserId, "circulation.reserve", "reservations", request.IdempotencyKey, ct);
             await tx.CommitAsync(ct);
             return new { request.BookId, status = "queued" };
         }
@@ -433,7 +440,7 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
             ORDER BY br.due_at
             """, cancellationToken: ct));
 
-    public async Task<object> CreateFineAsync(FineRequest request, CancellationToken ct)
+    public async Task<object> CreateFineAsync(FineRequest request, long actorUserId, CancellationToken ct)
     {
         if (request.Amount <= 0 || string.IsNullOrWhiteSpace(request.Reason) || string.IsNullOrWhiteSpace(request.IdempotencyKey))
             throw new InvalidOperationException("A positive amount, reason, and idempotency key are required.");
@@ -462,6 +469,7 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
                 VALUES(@BorrowingId, @MemberId, @Amount, @Reason, 'unpaid', @IdempotencyKey);
                 SELECT LAST_INSERT_ID();
                 """, request, tx, cancellationToken: ct));
+            await WriteAuditAsync(connection, tx, actorUserId, "fines.create", "fines", fineId.ToString(), ct);
             await tx.CommitAsync(ct);
             return new { FineId = fineId, request.MemberId, request.Amount, status = "unpaid" };
         }
@@ -521,8 +529,8 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
             var newStatus = request.Amount == fine.Amount - paid ? "paid" : "partially_paid";
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE fines SET status=@newStatus WHERE fine_id=@FineId", new { request.FineId, newStatus }, tx, cancellationToken: ct));
+            await WriteAuditAsync(connection, tx, receivedBy, "fines.payment", "payments", request.PaymentReference, ct);
             await tx.CommitAsync(ct);
-            await WriteAuditAsync(receivedBy, "fines.payment", "payments", request.PaymentReference, ct);
             return new { request.FineId, request.Amount, status = newStatus };
         }
         catch (MySqlException ex) when (ex.Number == 1062)
