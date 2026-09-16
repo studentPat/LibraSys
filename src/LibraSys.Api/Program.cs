@@ -113,6 +113,20 @@ app.MapGet("/api/catalog", async (string? search, int? page, int? pageSize, Libr
     return Results.Ok(await service.SearchBooksAsync(search, page ?? 1, Math.Clamp(pageSize ?? 20, 1, 100), ct));
 });
 
+app.MapPost("/api/catalog/books", async (HttpContext http, CreateBookRequest request, LibraryService service, CancellationToken ct) =>
+{
+    if (!IsStaff(http.User)) return Results.Forbid();
+    try { return Results.Ok(await service.CreateBookAsync(request, UserId(http.User), ct)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+});
+
+app.MapPost("/api/members", async (HttpContext http, CreateMemberRequest request, LibraryService service, CancellationToken ct) =>
+{
+    if (!IsStaff(http.User)) return Results.Forbid();
+    try { return Results.Ok(await service.CreateMemberAsync(request, UserId(http.User), ct)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+});
+
 app.MapGet("/api/members/{membershipNumber}", async (HttpContext http, string membershipNumber, LibraryService service, CancellationToken ct) =>
 {
     if (!http.User.Identity?.IsAuthenticated ?? true) return Results.Unauthorized();
@@ -192,6 +206,8 @@ public sealed record LoginResponse(long UserId, string DisplayName, string[] Rol
 public sealed record BorrowRequest(long CopyId, long MemberId, DateTime DueAt, string IdempotencyKey);
 public sealed record ReturnRequest(long BorrowingId, string Condition);
 public sealed record ReservationRequest(long BookId, long MemberId, string IdempotencyKey);
+public sealed record CreateBookRequest(string Isbn, string Title, long? PublisherId, int? PublicationYear);
+public sealed record CreateMemberRequest(string MembershipNumber, string FullName, string Email, string? Phone);
 public sealed record FineRequest(long? BorrowingId, long MemberId, decimal Amount, string Reason, string IdempotencyKey);
 public sealed record PaymentRequest(long FineId, long MemberId, decimal Amount, string PaymentReference);
 public sealed record BookRow(long BookId, string Isbn, string Title, string? PublisherName, int? AvailableCopies);
@@ -334,6 +350,50 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
     public Task<MemberRow?> GetMemberAsync(string number, CancellationToken ct) =>
         db.QuerySingleOrDefaultAsync<MemberRow>(new CommandDefinition(
             "SELECT member_id MemberId, user_id UserId, membership_number MembershipNumber, full_name FullName, email Email, status Status FROM members WHERE membership_number=@number", new { number }, cancellationToken: ct));
+
+    public async Task<object> CreateBookAsync(CreateBookRequest request, long actorUserId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(request.Isbn) || request.Isbn.Length > 20 ||
+            string.IsNullOrWhiteSpace(request.Title) || request.Title.Length > 300 ||
+            request.PublicationYear is < 1000 or > 2100)
+            throw new InvalidOperationException("ISBN, title, and publication year are invalid.");
+        try
+        {
+            var bookId = await db.ExecuteScalarAsync<long>(new CommandDefinition("""
+                INSERT INTO books(isbn, title, publisher_id, publication_year)
+                VALUES(@Isbn, @Title, @PublisherId, @PublicationYear);
+                SELECT LAST_INSERT_ID();
+                """, request, cancellationToken: ct));
+            await WriteAuditAsync(actorUserId, "catalog.book.create", "books", bookId.ToString(), ct);
+            return new { BookId = bookId, request.Isbn, request.Title };
+        }
+        catch (MySqlException ex) when (ex.Number == 1062)
+        {
+            throw new InvalidOperationException("ISBN is already registered.");
+        }
+    }
+
+    public async Task<object> CreateMemberAsync(CreateMemberRequest request, long actorUserId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(request.MembershipNumber) || request.MembershipNumber.Length > 30 ||
+            string.IsNullOrWhiteSpace(request.FullName) || request.FullName.Length > 150 ||
+            string.IsNullOrWhiteSpace(request.Email) || request.Email.Length > 254)
+            throw new InvalidOperationException("Membership number, name, and email are required and bounded.");
+        try
+        {
+            var memberId = await db.ExecuteScalarAsync<long>(new CommandDefinition("""
+                INSERT INTO members(membership_number, full_name, email, phone, status, joined_at)
+                VALUES(@MembershipNumber, @FullName, @Email, @Phone, 'active', UTC_DATE());
+                SELECT LAST_INSERT_ID();
+                """, request, cancellationToken: ct));
+            await WriteAuditAsync(actorUserId, "members.create", "members", memberId.ToString(), ct);
+            return new { MemberId = memberId, request.MembershipNumber, request.FullName };
+        }
+        catch (MySqlException ex) when (ex.Number == 1062)
+        {
+            throw new InvalidOperationException("Membership number or email is already registered.");
+        }
+    }
 
     public Task<bool> MemberBelongsToUserAsync(long memberId, long userId, CancellationToken ct) =>
         db.ExecuteScalarAsync<bool>(new CommandDefinition(

@@ -77,6 +77,10 @@ public sealed class SecurityAndSchemaTests
         var source = File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs"));
         Assert.Contains("WriteAuditAsync(connection, tx", source);
         Assert.Contains("VALUES(@actorUserId, @action, @entity, @entityId)", source);
+        Assert.Contains("/api/catalog/books", source);
+        Assert.Contains("catalog.book.create", source);
+        Assert.Contains("/api/members", source);
+        Assert.Contains("members.create", source);
         Assert.Contains("Payment reference has already been used for different payment data.", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("existing.Amount == request.Amount", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         var programText = File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs"));
