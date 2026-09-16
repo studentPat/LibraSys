@@ -10,13 +10,13 @@ builder.Services.AddSingleton<PasswordHasher>();
 builder.Services.AddScoped<IDbConnection>(_ =>
     new MySqlConnection(builder.Configuration.GetConnectionString("LibraryDatabase")));
 builder.Services.AddScoped<LibraryService>();
+builder.Services.AddHealthChecks()
+    .AddCheck<LibraryDatabaseHealthCheck>("mysql", tags: new[] { "ready" });
 builder.Services.AddAuthentication(BearerTokenDefaults.AuthenticationScheme)
     .AddBearerToken();
 builder.Services.AddAuthorization();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-builder.Services.AddHealthChecks();
-
 var app = builder.Build();
 app.UseExceptionHandler();
 app.UseSwagger();
@@ -36,6 +36,10 @@ app.Use(async (context, next) =>
     await next();
 });
 app.MapHealthChecks("/health");
+app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready")
+});
 
 app.MapPost("/api/auth/login", async (LoginRequest request, LibraryService service, CancellationToken ct) =>
 {
@@ -142,6 +146,37 @@ public sealed record FineRequest(long? BorrowingId, long MemberId, decimal Amoun
 public sealed record PaymentRequest(long FineId, long MemberId, decimal Amount, string PaymentReference);
 public sealed record BookRow(long BookId, string Isbn, string Title, string? PublisherName, int? AvailableCopies);
 public sealed record MemberRow(long MemberId, long? UserId, string MembershipNumber, string FullName, string Email, string Status);
+
+public sealed class LibraryDatabaseHealthCheck(IConfiguration configuration) : Microsoft.Extensions.Diagnostics.HealthChecks.IHealthCheck
+{
+    public async Task<Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult> CheckHealthAsync(
+        Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckContext context,
+        CancellationToken cancellationToken = default)
+    {
+        var connectionString = configuration.GetConnectionString("LibraryDatabase");
+        if (string.IsNullOrWhiteSpace(connectionString))
+            return Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Unhealthy("Library database connection is not configured.");
+
+        try
+        {
+            await using var connection = new MySqlConnection(connectionString);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(3));
+            await connection.OpenAsync(timeout.Token);
+            await using var command = new MySqlCommand("SELECT 1", connection);
+            await command.ExecuteScalarAsync(timeout.Token);
+            return Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Healthy();
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Unhealthy("Library database health check timed out.");
+        }
+        catch (MySqlException ex)
+        {
+            return Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Unhealthy("Library database is unavailable.", ex);
+        }
+    }
+}
 
 public sealed class PasswordHasher
 {

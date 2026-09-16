@@ -41,6 +41,9 @@ public sealed class SecurityAndSchemaTests
         Assert.Contains("/api/auth/logout", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("revoked_at=UTC_TIMESTAMP()", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("WriteAuditAsync", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("health/ready", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("LibraryDatabaseHealthCheck", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("CancelAfter(TimeSpan.FromSeconds(3))", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("WHERE idempotency_key=@IdempotencyKey", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
     }
 
