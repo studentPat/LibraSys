@@ -141,7 +141,7 @@ app.MapPost("/api/reservations", async (HttpContext http, ReservationRequest req
     if (!http.User.Identity?.IsAuthenticated ?? true) return Results.Unauthorized();
     if (!IsStaff(http.User) && !await service.MemberBelongsToUserAsync(request.MemberId, UserId(http.User), ct))
         return Results.Forbid();
-    try { return Results.Ok(await service.ReserveAsync(request, ct)); }
+    try { return Results.Ok(await service.ReserveAsync(request, UserId(http.User), ct)); }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
 
@@ -154,7 +154,7 @@ app.MapGet("/api/reports/overdue", async (HttpContext http, LibraryService servi
 app.MapPost("/api/fines", async (HttpContext http, FineRequest request, LibraryService service, CancellationToken ct) =>
 {
     if (!http.User.IsInRole("librarian") && !http.User.IsInRole("admin")) return Results.Forbid();
-    try { return Results.Ok(await service.CreateFineAsync(request, ct)); }
+    try { return Results.Ok(await service.CreateFineAsync(request, UserId(http.User), ct)); }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
 
@@ -391,7 +391,7 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
         return new { request.BorrowingId, status = "returned" };
     }
 
-    public async Task<object> ReserveAsync(ReservationRequest request, CancellationToken ct)
+    public async Task<object> ReserveAsync(ReservationRequest request, long actorUserId, CancellationToken ct)
     {
         if (request.BookId <= 0 || request.MemberId <= 0 || string.IsNullOrWhiteSpace(request.IdempotencyKey))
             throw new InvalidOperationException("Book, member, and idempotency key are required.");
@@ -412,6 +412,7 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
                 "INSERT INTO reservations(book_id,member_id,status,idempotency_key) VALUES(@BookId,@MemberId,'queued',@IdempotencyKey)",
                 request, tx, cancellationToken: ct));
             await tx.CommitAsync(ct);
+            await WriteAuditAsync(actorUserId, "circulation.reserve", "reservations", request.IdempotencyKey, ct);
             return new { request.BookId, status = "queued" };
         }
         catch (MySqlException ex) when (ex.Number == 1062)
@@ -433,7 +434,7 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
             ORDER BY br.due_at
             """, cancellationToken: ct));
 
-    public async Task<object> CreateFineAsync(FineRequest request, CancellationToken ct)
+    public async Task<object> CreateFineAsync(FineRequest request, long actorUserId, CancellationToken ct)
     {
         if (request.Amount <= 0 || string.IsNullOrWhiteSpace(request.Reason) || string.IsNullOrWhiteSpace(request.IdempotencyKey))
             throw new InvalidOperationException("A positive amount, reason, and idempotency key are required.");
@@ -463,6 +464,7 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
                 SELECT LAST_INSERT_ID();
                 """, request, tx, cancellationToken: ct));
             await tx.CommitAsync(ct);
+            await WriteAuditAsync(actorUserId, "fines.create", "fines", fineId.ToString(), ct);
             return new { FineId = fineId, request.MemberId, request.Amount, status = "unpaid" };
         }
         catch (MySqlException ex) when (ex.Number == 1062)

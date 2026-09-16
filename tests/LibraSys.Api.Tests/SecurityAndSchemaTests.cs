@@ -72,6 +72,8 @@ public sealed class SecurityAndSchemaTests
         Assert.Contains("SELECT member_id FROM borrowings WHERE borrowing_id=@BorrowingId FOR UPDATE", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("Book does not exist.", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("SELECT book_id FROM books WHERE book_id=@BookId FOR UPDATE", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("\"fines.create\"", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("\"circulation.reserve\"", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("Payment reference has already been used for different payment data.", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("existing.Amount == request.Amount", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         var programText = File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs"));
