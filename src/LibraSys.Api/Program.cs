@@ -49,6 +49,10 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 var app = builder.Build();
 app.UseExceptionHandler();
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();
+}
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -57,6 +61,13 @@ if (app.Environment.IsDevelopment())
 app.UseCors("frontend");
 app.UseRateLimiter();
 app.UseHttpsRedirection();
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+    context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    await next();
+});
 app.UseAuthentication();
 app.UseAuthorization();
 app.Use(async (context, next) =>

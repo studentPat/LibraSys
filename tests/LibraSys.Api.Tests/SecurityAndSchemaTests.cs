@@ -72,6 +72,11 @@ public sealed class SecurityAndSchemaTests
         Assert.Contains("SELECT member_id FROM borrowings WHERE borrowing_id=@BorrowingId FOR UPDATE", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("Payment reference has already been used for different payment data.", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("existing.Amount == request.Amount", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        var programText = File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs"));
+        Assert.Contains("app.UseHsts()", programText);
+        Assert.Contains("X-Content-Type-Options", programText);
+        Assert.Contains("X-Frame-Options", programText);
+        Assert.Contains("\"AllowedHosts\": \"localhost;127.0.0.1\"", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "appsettings.json")));
         Assert.Contains("WHERE idempotency_key=@IdempotencyKey", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
     }
 
