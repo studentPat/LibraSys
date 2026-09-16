@@ -44,6 +44,9 @@ public sealed class SecurityAndSchemaTests
         Assert.Contains("health/ready", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("LibraryDatabaseHealthCheck", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("CancelAfter(TimeSpan.FromSeconds(3))", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        var connectionSettings = File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "appsettings.json"));
+        Assert.DoesNotContain("${LIBRASYS_DB_PASSWORD}", connectionSettings);
+        Assert.Contains("connectionString.Contains(\"${\"", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         var frontend = File.ReadAllText(Path.Combine(root, "frontend", "index.html"));
         Assert.Contains("/api/me/fines", frontend);
         Assert.Contains("/api/reports/overdue", frontend);

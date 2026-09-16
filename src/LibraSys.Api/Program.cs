@@ -190,7 +190,7 @@ public sealed class LibraryDatabaseHealthCheck(IConfiguration configuration) : M
         CancellationToken cancellationToken = default)
     {
         var connectionString = configuration.GetConnectionString("LibraryDatabase");
-        if (string.IsNullOrWhiteSpace(connectionString))
+        if (string.IsNullOrWhiteSpace(connectionString) || connectionString.Contains("${", StringComparison.Ordinal))
             return Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Unhealthy("Library database connection is not configured.");
 
         try
