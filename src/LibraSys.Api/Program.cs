@@ -120,6 +120,13 @@ app.MapPost("/api/catalog/books", async (HttpContext http, CreateBookRequest req
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
 
+app.MapPost("/api/catalog/books/{bookId:long}/copies", async (HttpContext http, long bookId, CreateCopyRequest request, LibraryService service, CancellationToken ct) =>
+{
+    if (!IsStaff(http.User)) return Results.Forbid();
+    try { return Results.Ok(await service.CreateCopyAsync(bookId, request, UserId(http.User), ct)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+});
+
 app.MapPost("/api/members", async (HttpContext http, CreateMemberRequest request, LibraryService service, CancellationToken ct) =>
 {
     if (!IsStaff(http.User)) return Results.Forbid();
@@ -207,6 +214,7 @@ public sealed record BorrowRequest(long CopyId, long MemberId, DateTime DueAt, s
 public sealed record ReturnRequest(long BorrowingId, string Condition);
 public sealed record ReservationRequest(long BookId, long MemberId, string IdempotencyKey);
 public sealed record CreateBookRequest(string Isbn, string Title, long? PublisherId, int? PublicationYear);
+public sealed record CreateCopyRequest(string Barcode, DateTime AcquiredAt);
 public sealed record CreateMemberRequest(string MembershipNumber, string FullName, string Email, string? Phone);
 public sealed record FineRequest(long? BorrowingId, long MemberId, decimal Amount, string Reason, string IdempotencyKey);
 public sealed record PaymentRequest(long FineId, long MemberId, decimal Amount, string PaymentReference);
@@ -392,6 +400,36 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
         catch (MySqlException ex) when (ex.Number == 1062)
         {
             throw new InvalidOperationException("Membership number or email is already registered.");
+        }
+    }
+
+    public async Task<object> CreateCopyAsync(long bookId, CreateCopyRequest request, long actorUserId, CancellationToken ct)
+    {
+        if (bookId <= 0 || string.IsNullOrWhiteSpace(request.Barcode) || request.Barcode.Length > 50 ||
+            request.AcquiredAt.Date > DateTime.UtcNow.Date)
+            throw new InvalidOperationException("Book, barcode, and acquisition date are invalid.");
+
+        await using var connection = (MySqlConnection)db;
+        await connection.OpenAsync(ct);
+        await using var tx = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+        var existingBook = await connection.ExecuteScalarAsync<long?>(new CommandDefinition(
+            "SELECT book_id FROM books WHERE book_id=@bookId FOR UPDATE", new { bookId }, tx, cancellationToken: ct));
+        if (existingBook is null) throw new InvalidOperationException("Book does not exist.");
+        try
+        {
+            var copyId = await connection.ExecuteScalarAsync<long>(new CommandDefinition("""
+                INSERT INTO book_copies(book_id, barcode, status, acquired_at)
+                VALUES(@bookId, @Barcode, 'available', @AcquiredAt);
+                SELECT LAST_INSERT_ID();
+                """, new { bookId, request.Barcode, request.AcquiredAt }, tx, cancellationToken: ct));
+            await WriteAuditAsync(connection, tx, actorUserId, "catalog.copy.create", "book_copies", copyId.ToString(), ct);
+            await tx.CommitAsync(ct);
+            return new { CopyId = copyId, BookId = bookId, request.Barcode, status = "available" };
+        }
+        catch (MySqlException ex) when (ex.Number == 1062)
+        {
+            await tx.RollbackAsync(ct);
+            throw new InvalidOperationException("Barcode is already registered.");
         }
     }
 
