@@ -93,6 +93,9 @@ public sealed class SecurityAndSchemaTests
         Assert.Contains("EXPLAIN ANALYZE", tuning);
         Assert.Contains("ix_borrowings_due_status", tuning);
         Assert.Contains("ix_reservations_book_queue", tuning);
+        var workflow = File.ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml"));
+        Assert.Contains("dotnet build LibraSys.slnx", workflow);
+        Assert.Contains("dotnet test LibraSys.slnx", workflow);
         Assert.Contains("Payment reference has already been used for different payment data.", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("existing.Amount == request.Amount", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         var programText = File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs"));

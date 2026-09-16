@@ -1,0 +1,27 @@
+name: LibraSys CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Restore
+        run: dotnet restore LibraSys.slnx
+      - name: Build
+        run: dotnet build LibraSys.slnx --configuration Release --no-restore
+      - name: Test
+        run: dotnet test LibraSys.slnx --configuration Release --no-build
+      - name: Check whitespace
+        run: git diff --check
