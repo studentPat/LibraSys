@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LibraSys.Api/LibraSys.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LibraSys.Api.Tests/LibraSys.Api.Tests.csproj" />
+  </Folder>
+</Solution>
