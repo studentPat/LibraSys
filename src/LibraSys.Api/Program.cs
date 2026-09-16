@@ -93,7 +93,11 @@ app.MapPost("/api/auth/logout", async (HttpContext http, LibraryService service,
 });
 
 app.MapGet("/api/catalog", async (string? search, int? page, int? pageSize, LibraryService service, CancellationToken ct) =>
-    Results.Ok(await service.SearchBooksAsync(search, page ?? 1, Math.Clamp(pageSize ?? 20, 1, 100), ct)));
+{
+    if (page is < 1) return Results.BadRequest(new { error = "Page must be at least 1." });
+    if (search?.Length > 200) return Results.BadRequest(new { error = "Search text is too long." });
+    return Results.Ok(await service.SearchBooksAsync(search, page ?? 1, Math.Clamp(pageSize ?? 20, 1, 100), ct));
+});
 
 app.MapGet("/api/members/{membershipNumber}", async (HttpContext http, string membershipNumber, LibraryService service, CancellationToken ct) =>
 {
