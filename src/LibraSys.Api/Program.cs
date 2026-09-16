@@ -513,7 +513,15 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
         catch (MySqlException ex) when (ex.Number == 1062)
         {
             await tx.RollbackAsync(ct);
-            throw new InvalidOperationException("Payment reference has already been used.");
+            var existing = await db.QuerySingleOrDefaultAsync<(long PaymentId, long FineId, long MemberId, decimal Amount)>(
+                new CommandDefinition("""
+                    SELECT payment_id PaymentId, fine_id FineId, member_id MemberId, amount Amount
+                    FROM payments WHERE payment_reference=@PaymentReference
+                    """, request, cancellationToken: ct));
+            if (existing.PaymentId != 0 && existing.FineId == request.FineId &&
+                existing.MemberId == request.MemberId && existing.Amount == request.Amount)
+                return new { request.FineId, request.Amount, status = "accepted", PaymentId = existing.PaymentId };
+            throw new InvalidOperationException("Payment reference has already been used for different payment data.");
         }
     }
 
