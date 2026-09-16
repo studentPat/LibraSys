@@ -123,7 +123,6 @@ CREATE TABLE borrowings (
     returned_at DATETIME NULL,
     status ENUM('active','returned','overdue','lost') NOT NULL DEFAULT 'active',
     returned_condition ENUM('good','damaged','lost') NULL,
-    idempotency_key VARCHAR(100) NOT NULL UNIQUE,
     created_by BIGINT UNSIGNED NOT NULL,
     CONSTRAINT fk_borrowings_copy FOREIGN KEY (copy_id) REFERENCES book_copies(copy_id),
     CONSTRAINT fk_borrowings_member FOREIGN KEY (member_id) REFERENCES members(member_id),

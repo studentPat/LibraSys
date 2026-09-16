@@ -24,6 +24,8 @@ public sealed class SecurityAndSchemaTests
 
         Assert.Contains("ENGINE=InnoDB", schema);
         Assert.Contains("idempotency_key", schema);
+        Assert.Contains("CREATE TABLE fines", schema);
+        Assert.Contains("CREATE TABLE payments", schema);
         Assert.Contains("FOR UPDATE", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("Pbkdf2", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
     }

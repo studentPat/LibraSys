@@ -79,6 +79,26 @@ app.MapGet("/api/reports/overdue", async (HttpContext http, LibraryService servi
     return Results.Ok(await service.OverdueAsync(ct));
 });
 
+app.MapPost("/api/fines", async (HttpContext http, FineRequest request, LibraryService service, CancellationToken ct) =>
+{
+    if (!http.User.IsInRole("librarian") && !http.User.IsInRole("admin")) return Results.Forbid();
+    try { return Results.Ok(await service.CreateFineAsync(request, ct)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+});
+
+app.MapGet("/api/members/{memberId:long}/fines", async (HttpContext http, long memberId, LibraryService service, CancellationToken ct) =>
+{
+    if (!http.User.IsInRole("librarian") && !http.User.IsInRole("admin")) return Results.Forbid();
+    return Results.Ok(await service.MemberFinesAsync(memberId, ct));
+});
+
+app.MapPost("/api/payments", async (HttpContext http, PaymentRequest request, LibraryService service, CancellationToken ct) =>
+{
+    if (!http.User.IsInRole("librarian") && !http.User.IsInRole("admin")) return Results.Forbid();
+    try { return Results.Ok(await service.PayFineAsync(request, ct)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+});
+
 app.Run();
 
 public sealed record LoginRequest(string Username, string Password);
@@ -86,6 +106,8 @@ public sealed record LoginResponse(long UserId, string DisplayName, string[] Rol
 public sealed record BorrowRequest(long CopyId, long MemberId, long StaffUserId, DateTime DueAt, string IdempotencyKey);
 public sealed record ReturnRequest(long BorrowingId, long StaffUserId, string Condition);
 public sealed record ReservationRequest(long BookId, long MemberId, string IdempotencyKey);
+public sealed record FineRequest(long? BorrowingId, long MemberId, decimal Amount, string Reason, string IdempotencyKey);
+public sealed record PaymentRequest(long FineId, long MemberId, decimal Amount, string PaymentReference, long ReceivedBy);
 public sealed record BookRow(long BookId, string Isbn, string Title, string? PublisherName, int? AvailableCopies);
 public sealed record MemberRow(long MemberId, string MembershipNumber, string FullName, string Email, string Status);
 
@@ -218,6 +240,77 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
             WHERE br.status='active' AND br.due_at < UTC_TIMESTAMP()
             ORDER BY br.due_at
             """, cancellationToken: ct));
+
+    public async Task<object> CreateFineAsync(FineRequest request, CancellationToken ct)
+    {
+        if (request.Amount <= 0 || string.IsNullOrWhiteSpace(request.Reason) || string.IsNullOrWhiteSpace(request.IdempotencyKey))
+            throw new InvalidOperationException("A positive amount, reason, and idempotency key are required.");
+
+        try
+        {
+            var fineId = await db.ExecuteScalarAsync<long>(new CommandDefinition("""
+                INSERT INTO fines(borrowing_id, member_id, amount, reason, status, idempotency_key)
+                VALUES(@BorrowingId, @MemberId, @Amount, @Reason, 'unpaid', @IdempotencyKey);
+                SELECT LAST_INSERT_ID();
+                """, request, cancellationToken: ct));
+            return new { FineId = fineId, request.MemberId, request.Amount, status = "unpaid" };
+        }
+        catch (MySqlException ex) when (ex.Number == 1062)
+        {
+            var existing = await db.QuerySingleAsync<object>(new CommandDefinition(
+                "SELECT fine_id FineId, member_id MemberId, amount Amount, status Status FROM fines WHERE idempotency_key=@IdempotencyKey",
+                request, cancellationToken: ct));
+            return existing;
+        }
+    }
+
+    public Task<IEnumerable<object>> MemberFinesAsync(long memberId, CancellationToken ct) =>
+        db.QueryAsync<object>(new CommandDefinition("""
+            SELECT fine_id FineId, borrowing_id BorrowingId, amount Amount, reason Reason,
+                   status Status, assessed_at AssessedAt,
+                   COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.fine_id=f.fine_id), 0) PaidAmount
+            FROM fines f WHERE member_id=@memberId ORDER BY assessed_at DESC
+            """, new { memberId }, cancellationToken: ct));
+
+    public async Task<object> PayFineAsync(PaymentRequest request, CancellationToken ct)
+    {
+        if (request.Amount <= 0 || string.IsNullOrWhiteSpace(request.PaymentReference))
+            throw new InvalidOperationException("A positive amount and payment reference are required.");
+
+        await using var connection = (MySqlConnection)db;
+        await connection.OpenAsync(ct);
+        await using var tx = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+        var fine = await connection.QuerySingleOrDefaultAsync<(long FineId, long MemberId, decimal Amount, string Status)>(
+            new CommandDefinition("""
+                SELECT fine_id FineId, member_id MemberId, amount Amount, status Status
+                FROM fines WHERE fine_id=@FineId FOR UPDATE
+                """, request, tx, cancellationToken: ct));
+        if (fine.FineId == 0 || fine.MemberId != request.MemberId || fine.Status == "waived")
+            throw new InvalidOperationException("Fine is not payable for this member.");
+
+        var paid = await connection.ExecuteScalarAsync<decimal>(new CommandDefinition(
+            "SELECT COALESCE(SUM(amount), 0) FROM payments WHERE fine_id=@FineId", request, tx, cancellationToken: ct));
+        if (request.Amount > fine.Amount - paid)
+            throw new InvalidOperationException("Payment exceeds the outstanding fine balance.");
+
+        try
+        {
+            await connection.ExecuteAsync(new CommandDefinition("""
+                INSERT INTO payments(fine_id, member_id, amount, payment_reference, received_by)
+                VALUES(@FineId, @MemberId, @Amount, @PaymentReference, @ReceivedBy)
+                """, request, tx, cancellationToken: ct));
+            var newStatus = request.Amount == fine.Amount - paid ? "paid" : "partially_paid";
+            await connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE fines SET status=@newStatus WHERE fine_id=@FineId", new { request.FineId, newStatus }, tx, cancellationToken: ct));
+            await tx.CommitAsync(ct);
+            return new { request.FineId, request.Amount, status = newStatus };
+        }
+        catch (MySqlException ex) when (ex.Number == 1062)
+        {
+            await tx.RollbackAsync(ct);
+            throw new InvalidOperationException("Payment reference has already been used.");
+        }
+    }
 
     private sealed record UserRecord(long UserId, string DisplayName, string PasswordHash);
 }
