@@ -33,6 +33,10 @@ public sealed class SecurityAndSchemaTests
         Assert.Contains("Member is not active.", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("public sealed record BorrowRequest(long CopyId, long MemberId, DateTime DueAt, string IdempotencyKey)", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
         Assert.Contains("public sealed record PaymentRequest(long FineId, long MemberId, decimal Amount, string PaymentReference)", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("future due date", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("is not (\"good\" or \"damaged\" or \"lost\")", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("request.Condition == \"lost\"", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
+        Assert.Contains("WHERE idempotency_key=@IdempotencyKey", File.ReadAllText(Path.Combine(root, "src", "LibraSys.Api", "Program.cs")));
     }
 
     private static string FindRepositoryRoot()

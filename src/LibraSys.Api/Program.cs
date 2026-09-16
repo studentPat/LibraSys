@@ -211,6 +211,8 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
 
     public async Task<object> BorrowAsync(BorrowRequest request, long staffUserId, CancellationToken ct)
     {
+        if (request.CopyId <= 0 || request.MemberId <= 0 || request.DueAt <= DateTime.UtcNow || string.IsNullOrWhiteSpace(request.IdempotencyKey))
+            throw new InvalidOperationException("Copy, member, future due date, and idempotency key are required.");
         for (var attempt = 0; attempt < 3; attempt++)
         {
             await using var connection = (MySqlConnection)db;
@@ -233,12 +235,22 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
                 return new { request.CopyId, status = "active" };
             }
             catch (MySqlException ex) when (ex.Number == 1213 && attempt < 2) { await tx.RollbackAsync(ct); await Task.Delay(25 * (attempt + 1), ct); }
+            catch (MySqlException ex) when (ex.Number == 1062)
+            {
+                await tx.RollbackAsync(ct);
+                var existing = await connection.QuerySingleAsync<object>(new CommandDefinition(
+                    "SELECT borrowing_id BorrowingId, copy_id CopyId, member_id MemberId, status Status FROM borrowings WHERE idempotency_key=@IdempotencyKey",
+                    request, cancellationToken: ct));
+                return existing;
+            }
         }
         throw new InvalidOperationException("Borrow operation could not be completed after deadlock retries.");
     }
 
     public async Task<object> ReturnAsync(ReturnRequest request, CancellationToken ct)
     {
+        if (request.BorrowingId <= 0 || request.Condition is not ("good" or "damaged" or "lost"))
+            throw new InvalidOperationException("A valid borrowing and return condition are required.");
         await using var connection = (MySqlConnection)db;
         await connection.OpenAsync(ct);
         await using var tx = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
@@ -246,13 +258,16 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
             new CommandDefinition("SELECT copy_id CopyId, status Status FROM borrowings WHERE borrowing_id=@BorrowingId FOR UPDATE", request, tx, cancellationToken: ct));
         if (borrowing.CopyId == 0 || borrowing.Status != "active") throw new InvalidOperationException("Borrowing is not active.");
         await connection.ExecuteAsync(new CommandDefinition("UPDATE borrowings SET returned_at=UTC_TIMESTAMP(), status='returned', returned_condition=@Condition WHERE borrowing_id=@BorrowingId", request, tx, cancellationToken: ct));
-        await connection.ExecuteAsync(new CommandDefinition("UPDATE book_copies SET status='available', version=version+1 WHERE copy_id=@CopyId", new { borrowing.CopyId }, tx, cancellationToken: ct));
+        var copyStatus = request.Condition == "lost" ? "lost" : request.Condition == "damaged" ? "maintenance" : "available";
+        await connection.ExecuteAsync(new CommandDefinition("UPDATE book_copies SET status=@copyStatus, version=version+1 WHERE copy_id=@CopyId", new { borrowing.CopyId, copyStatus }, tx, cancellationToken: ct));
         await tx.CommitAsync(ct);
         return new { request.BorrowingId, status = "returned" };
     }
 
     public async Task<object> ReserveAsync(ReservationRequest request, CancellationToken ct)
     {
+        if (request.BookId <= 0 || request.MemberId <= 0 || string.IsNullOrWhiteSpace(request.IdempotencyKey))
+            throw new InvalidOperationException("Book, member, and idempotency key are required.");
         await using var connection = (MySqlConnection)db;
         await connection.OpenAsync(ct);
         await using var tx = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
@@ -260,11 +275,21 @@ public sealed class LibraryService(IDbConnection db, PasswordHasher hasher)
             "SELECT member_id FROM members WHERE member_id=@MemberId AND status='active' FOR UPDATE",
             request, tx, cancellationToken: ct));
         if (memberActive is null) throw new InvalidOperationException("Member is not active.");
-        await connection.ExecuteAsync(new CommandDefinition(
-            "INSERT INTO reservations(book_id,member_id,status,idempotency_key) VALUES(@BookId,@MemberId,'queued',@IdempotencyKey)",
-            request, tx, cancellationToken: ct));
-        await tx.CommitAsync(ct);
-        return new { request.BookId, status = "queued" };
+        try
+        {
+            await connection.ExecuteAsync(new CommandDefinition(
+                "INSERT INTO reservations(book_id,member_id,status,idempotency_key) VALUES(@BookId,@MemberId,'queued',@IdempotencyKey)",
+                request, tx, cancellationToken: ct));
+            await tx.CommitAsync(ct);
+            return new { request.BookId, status = "queued" };
+        }
+        catch (MySqlException ex) when (ex.Number == 1062)
+        {
+            await tx.RollbackAsync(ct);
+            return await db.QuerySingleAsync<object>(new CommandDefinition(
+                "SELECT reservation_id ReservationId, book_id BookId, member_id MemberId, status Status FROM reservations WHERE idempotency_key=@IdempotencyKey",
+                request, cancellationToken: ct));
+        }
     }
 
     public Task<IEnumerable<object>> OverdueAsync(CancellationToken ct) =>
